@@ -118,8 +118,10 @@ func (g *ParallelGuessGenerator) RunParallelWithSession(limit int64, savePath, r
 		cancel()
 	}()
 
-	// always save on exit: normal, signal, or panic. Works for first run and -l (load)
-	defer func() {
+	var saveMutex sync.Mutex
+	doSave := func(){
+		saveMutex.Lock()
+		defer saveMutex.Unlock()
 		currentRunTime := int64(time.Since(g.startTime).Seconds())
 		cfg := &SessionConfig{
 			NumGuesses:     g.totalGuesses.Load(),
@@ -131,9 +133,24 @@ func (g *ParallelGuessGenerator) RunParallelWithSession(limit int64, savePath, r
 		}
 		if saveErr := SaveSession(savePath, cfg, ruleName, ruleUUID, skipBrute, skipCase, g.originalFirstStarted); saveErr != nil {
 			fmt.Fprintf(os.Stderr, "Warning: could not save session: %v\n", saveErr)
-		} else {
-			fmt.Fprintf(os.Stderr, "Session saved to %s\n", savePath)
 		}
+	}
+	ticker := time.NewTicker(10 * time.Second)
+	defer ticker.Stop()
+	go func ()  {
+		for{
+			select {
+			case <-ticker.C:
+				doSave()
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+
+	// always save on exit: normal, signal, or panic. Works for first run and -l (load)
+	defer func() {
+		doSave()
 	}()
 
 	return g.runParallelWithCtx(ctx, limit, cancel)

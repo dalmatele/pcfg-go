@@ -22,7 +22,7 @@ import (
 	"github.com/cyclone-github/pcfg-go/guesser/omen"
 )
 
-const version = "0.5.2 (Go)"
+const version = "0.5.3 (Go)"
 
 func main() {
 	runtime.GOMAXPROCS(runtime.NumCPU())
@@ -38,6 +38,7 @@ func main() {
 	skipBrute := flag.Bool("b", false, "Skip OMEN/Markov guesses")
 	allLower := flag.Bool("a", false, "No case mangling")
 	debug := flag.Bool("d", false, "Debug output instead of guesses")
+	fastMode := flag.String("f", "slow", "Fast mode (only use num_parse_trees to restore)")
 
 	flag.Parse()
 
@@ -52,7 +53,7 @@ func main() {
 		os.Exit(0)
 	}
 	if *versionFlag {
-		fmt.Fprintln(os.Stderr, "PCFG Guesser v0.5.2 (Go)")
+		fmt.Fprintln(os.Stderr, "PCFG Guesser v0.5.3 (Go)")
 		fmt.Fprintln(os.Stderr, "https://github.com/cyclone-github/pcfg-go/")
 		os.Exit(0)
 	}
@@ -125,7 +126,25 @@ func main() {
 			}
 			fmt.Fprintln(os.Stderr, "Restoring saved progress...")
 			fmt.Fprintln(os.Stderr, "Note: Restore may take a long time for sessions that ran for hours or days.")
-			queue := guesser.NewPcfgQueueFromSave(g, base, sav.MinProbability, sav.MaxProbability)
+			// we check if using fast mode
+			var queue *guesser.PcfgQueue
+			switch *fastMode {
+			case "fast":
+				fmt.Fprintln(os.Stderr, "Run in restore fast mode")
+				queue = guesser.NewPcfgQueueFromParseTrees(g, base, sav.NumParseTrees)
+				if queue == nil {
+					fmt.Fprintln(os.Stderr, "ERROR: Queue is nil!")
+					os.Exit(1)
+				}
+				fmt.Fprintln(os.Stderr, "Queue size after restore: %d\n", queue.QueueSize())
+			default:
+				queue = guesser.NewPcfgQueueFromSave(g, base, sav.MinProbability, sav.MaxProbability)
+			}
+			if queue == nil || queue.QueueSize() == 0 {
+				fmt.Fprintln(os.Stderr, "FATAL: No queue to process!")
+				os.Exit(1)
+			}
+			
 			gen = guesser.NewParallelGuessGeneratorWithQueueAndRestore(g, base, queue, omenGrammar, *debug, sav)
 		} else {
 			gen = guesser.NewParallelGuessGenerator(g, base, omenGrammar, *debug)

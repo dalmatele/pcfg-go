@@ -5,6 +5,8 @@ import (
 	"runtime"
 	"sync"
 	"sync/atomic"
+	"fmt"
+	"os"
 
 	pcfg "github.com/cyclone-github/pcfg-go/shared"
 )
@@ -60,6 +62,11 @@ type PcfgQueue struct {
 	MaxProbability float64
 	MinProbability float64
 	seqCounter     atomic.Int64
+
+	// Các biến cho Fast Restore
+    treesToSkip     int64   // Số cây cần skip
+    initialSkip     int64   // Lưu lại giá trị ban đầu để log
+    isRestoring     bool    // Đang ở chế độ restore
 }
 
 // create and initializes a priority queue with base structures
@@ -199,23 +206,7 @@ func isParentInQueue(grammar pcfg.Grammar, ptItem *pcfg.PTItem, maxProb float64)
 	return false
 }
 
-// pops the highest probability item and pushes its children
-func (q *PcfgQueue) Next() *pcfg.PTItem {
-	if q.pq.Len() == 0 {
-		return nil
-	}
 
-	qi := heap.Pop(&q.pq).(*queueItem)
-	q.MaxProbability = qi.item.Prob
-
-	children := findChildren(q.grammar, &qi.item)
-	for _, child := range children {
-		seq := q.seqCounter.Add(1)
-		heap.Push(&q.pq, &queueItem{item: child, seq: seq})
-	}
-
-	return &qi.item
-}
 
 // returns current queue size
 func (q *PcfgQueue) QueueSize() int {
@@ -282,4 +273,113 @@ func areYouMyChild(grammar pcfg.Grammar, child []pcfg.PTNode, baseProb float64, 
 		}
 	}
 	return true
+}
+
+func NewPcfgQueueFromParseTrees(grammar pcfg.Grammar, base []pcfg.BaseStructure, numParseTrees int64) *PcfgQueue {
+	fmt.Fprintf(os.Stderr, "[Fast Restore] ========== START ==========\n")
+	fmt.Fprintf(os.Stderr, "[Fast Restore] numParseTrees: %d\n", numParseTrees)
+	
+	q := &PcfgQueue{
+		grammar:     grammar,
+		base:        base,
+		treesToSkip: numParseTrees,
+		initialSkip: numParseTrees,
+		isRestoring: true,
+	}
+	
+	heap.Init(&q.pq)
+	
+	fmt.Fprintf(os.Stderr, "[Fast Restore] Creating queue from %d base structures\n", len(base))
+	
+	// Khởi tạo queue từ base structures
+	for _, b := range base {
+		pt := make([]pcfg.PTNode, len(b.Replacements))
+		for j, r := range b.Replacements {
+			pt[j] = pcfg.PTNode{Type: r, Index: 0}
+		}
+		prob := findProb(grammar, pt, b.Prob)
+		item := pcfg.PTItem{
+			Prob:     prob,
+			PT:       pt,
+			BaseProb: b.Prob,
+		}
+		seq := q.seqCounter.Add(1)
+		heap.Push(&q.pq, &queueItem{item: item, seq: seq})
+	}
+	
+	fmt.Fprintf(os.Stderr, "[Fast Restore] Initial queue size: %d\n", q.pq.Len())
+	fmt.Fprintf(os.Stderr, "[Fast Restore] treesToSkip: %d\n", q.treesToSkip)
+	fmt.Fprintf(os.Stderr, "[Fast Restore] isRestoring: %v\n", q.isRestoring)
+	
+	// Nếu numParseTrees > queue size, chỉ skip hết queue
+	if numParseTrees > int64(q.pq.Len()) && q.pq.Len() > 0 {
+		fmt.Fprintf(os.Stderr, "[Fast Restore] WARNING: numParseTrees (%d) > queue size (%d)\n", 
+			numParseTrees, q.pq.Len())
+		fmt.Fprintf(os.Stderr, "[Fast Restore] Will skip all %d items\n", q.pq.Len())
+		q.treesToSkip = int64(q.pq.Len())
+	}
+	
+	// Nếu queue rỗng từ đầu
+	if q.pq.Len() == 0 {
+		fmt.Fprintf(os.Stderr, "[Fast Restore] ERROR: Queue is empty from start!\n")
+		return q
+	}
+	
+	fmt.Fprintf(os.Stderr, "[Fast Restore] Starting skip loop...\n")
+	skipped := int64(0)
+	
+	// Skip và push children (giống như Next())
+	for q.isRestoring && q.treesToSkip > 0 && q.pq.Len() > 0 {
+		// Pop item
+		qi := heap.Pop(&q.pq).(*queueItem)
+		q.treesToSkip--
+		skipped++
+		
+		// ✅ QUAN TRỌNG: Push children (giống như Next())
+		children := findChildren(q.grammar, &qi.item)
+		for _, child := range children {
+			seq := q.seqCounter.Add(1)
+			heap.Push(&q.pq, &queueItem{item: child, seq: seq})
+		}
+		
+		// Log mỗi 1000 items
+		if skipped%1000 == 0 {
+			fmt.Fprintf(os.Stderr, "[Fast Restore] Skipped %d items, remaining: %d, queue size: %d\n", 
+				skipped, q.treesToSkip, q.pq.Len())
+		}
+		
+		// Nếu skip hết hoặc queue rỗng
+		if q.treesToSkip == 0 || q.pq.Len() == 0 {
+			fmt.Fprintf(os.Stderr, "[Fast Restore] Skip loop ended: skipped=%d, remaining=%d, queue_size=%d\n", 
+				skipped, q.treesToSkip, q.pq.Len())
+			q.isRestoring = false
+			break
+		}
+	}
+	
+	fmt.Fprintf(os.Stderr, "[Fast Restore] Final queue size: %d\n", q.pq.Len())
+	fmt.Fprintf(os.Stderr, "[Fast Restore] ========== DONE ==========\n")
+	
+	return q
+}
+
+func (q *PcfgQueue) Next() *pcfg.PTItem {
+	if q.pq.Len() == 0 {
+		return nil
+	}
+	
+	// Pop item
+	qi := heap.Pop(&q.pq).(*queueItem)
+	
+	// Cập nhật max probability
+	q.MaxProbability = qi.item.Prob
+	
+	// Push children
+	children := findChildren(q.grammar, &qi.item)
+	for _, child := range children {
+		seq := q.seqCounter.Add(1)
+		heap.Push(&q.pq, &queueItem{item: child, seq: seq})
+	}
+	
+	return &qi.item
 }

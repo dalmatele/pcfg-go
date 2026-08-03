@@ -51,6 +51,11 @@ func (pq *priorityQueue) Pop() interface{} {
 	old[n-1] = nil
 	item.index = -1
 	*pq = old[0 : n-1]
+	if(cap(*pq) > 10240 && len(*pq) < cap(*pq)/4){
+		newPq := make(priorityQueue, len(*pq), cap(*pq)/2)
+		copy(newPq, *pq)
+		*pq = newPq
+	}
 	return item
 }
 
@@ -226,7 +231,7 @@ func findProb(grammar pcfg.Grammar, pt []pcfg.PTNode, baseProb float64) float64 
 
 func findChildren(grammar pcfg.Grammar, ptItem *pcfg.PTItem) []pcfg.PTItem {
 	parentPT := ptItem.PT
-	var children []pcfg.PTItem
+	children := make([]pcfg.PTItem, 0, len(parentPT))
 
 	for pos, node := range parentPT {
 		entries := grammar[node.Type]
@@ -236,7 +241,7 @@ func findChildren(grammar pcfg.Grammar, ptItem *pcfg.PTItem) []pcfg.PTItem {
 
 		child := make([]pcfg.PTNode, len(parentPT))
 		copy(child, parentPT)
-		child[pos] = pcfg.PTNode{Type: child[pos].Type, Index: child[pos].Index + 1}
+		child[pos].Index++
 
 		if areYouMyChild(grammar, child, ptItem.BaseProb, pos, ptItem.Prob) {
 			childProb := findProb(grammar, child, ptItem.BaseProb)

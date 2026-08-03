@@ -16,6 +16,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"runtime/debug"
 	"strings"
 
 	"github.com/cyclone-github/pcfg-go/guesser"
@@ -25,6 +26,7 @@ import (
 const version = "0.5.3 (Go)"
 
 func main() {
+	debug.SetMemoryLimit(4 * 1024 * 1024 * 1024)
 	runtime.GOMAXPROCS(runtime.NumCPU())
 
 	cycloneFlag := flag.Bool("cyclone", false, "pcfg_guesser")
